@@ -1,0 +1,1157 @@
+  define in_snfile 0
+  define in_xmlfile 1
+
+  define out_snfile 0
+  define out_pcfile 1
+
+  define kbtst 0 
+  define kbrunit 1
+  define kbmac 2
+
+  define DEB(string) if (verbose) type "%s\n" string
+  define DBG if (verbose) type
+
+  define STR_NULL "\200"
+
+  setnumber seqdelim ','
+  setnumber verbose 0
+	    do_snpull 0
+	    file_mode 0
+	    cluster_mode 0
+	    exact_mode 0
+	    filter_mode 0
+	    xml_mode 0
+	    rohs_mode 0
+	    macadd_mode 0
+
+  vargroup start passfail_record 20 par_record child_record
+
+  call genparent_check_verbose_mode
+
+main:
+
+  //Assign cluster server to mycluster variable
+  //call my_fetch_cluster_server		//To be updated
+
+  if (mycluster == "") || (mycluster == "\200") {	//If no cluster server found, use otherdev1
+    //setstring mycluster "otherdev1"
+    setstring mycluster machine_name
+  }
+
+  askstring caps role_choice "Looking for Parent or Child (P/C) 'Q' to quit:" 
+  ifphrase "-" role_choice {
+    ifphrase "H" role_choice {
+      goto help
+    }
+    ifphrase "V" role_choice {
+      setnumber verbose 1
+    }
+    ifphrase "P" role_choice {
+      setnumber do_snpull 1
+    }
+    ifphrase "E" role_choice {
+      setnumber exact_mode 1
+    }
+    ifphrase "F" role_choice {
+      setnumber file_mode 1
+    }
+    ifphrase "I" role_choice {
+      setnumber filter_mode 1
+    }
+    ifphrase "S" role_choice {
+      setnumber special 1
+    }
+    ifphrase "L" role_choice {	//Show child record (if any) which their uuttype match reference list only
+      setnumber reference_list 1
+    }
+    ifphrase "U" role_choice {
+      setnumber cluster_mode 1
+    }
+    ifphrase "X" role_choice {
+      setnumber xml_mode 1
+    }
+    ifphrase "R" role_choice {
+      setnumber rohs_mode 1
+    }
+    ifphrase "M" role_choice {
+      setnumber macadd_mode 1
+    }
+    askstring caps role_choice "Looking for Parent or Child (P/C) 'Q' to quit:"
+  }
+
+  if (cluster_mode) {
+    call my_fetch_cluster_server
+  }
+
+  switch start role_choice {
+    case "Q" goto genparent_quit
+    case "P" if (!file_mode) {
+               askstring caps sernum "Enter the child sernum :"
+             }
+	     if (file_mode) {
+               askstring normal file_name "Enter the file name :"
+             }
+ 	     if (filter_mode) {
+	       askstring caps ir_tstarea_list "Enter test area list to ignore (separated by ',') :"
+	     }
+             break
+    case "C" if (!file_mode) {
+               askstring caps sernum "Enter the parent sernum :"
+             }
+             if (file_mode) {
+               askstring normal file_name "Enter the file name :"
+             }
+ 	     if (filter_mode) {
+	       askstring caps ir_tstarea_list "Enter test area list to ignore (separated by ',') :"
+	     }
+             break
+    default goto genparent_quit
+  } switch finish
+
+  if (reference_list) && (file_mode) {
+    askstring caps hold "Enter the reference uuttype : "
+    seqset mayinsert delim ';' reference_list_str -1 hold
+    if (hold == "") break
+    continue
+  }
+
+  askstring caps option_input1 ""		//012414
+  switch start option_input1 {
+    case "SKIP" if (macadd_mode) {
+                  setstring macadd_skipstr ""
+		  askstring caps macadd_skipstr "Enter MAC check skip criteria - "
+                }
+                break
+    default 
+  } switch finish
+
+  setstring test_area ""
+  askstring caps test_area ""
+
+  if (file_mode) {
+    setnumber end_of_file 0
+    inputfile file_name in_snfile
+    outputfile "%s_out" file_name out_snfile
+  }
+  
+  setnumber my_ctra 0 my_db_status_flag 0
+  {
+    calc my_db_status_flag = my_ctra % 50
+    if (my_db_status_flag == 0) {
+      //Open cluster tst
+      kbopen kbtst rdonly "%s:tst" mycluster
+      if (macadd_mode) { kbopen kbmac rdonly "%s:mac" mycluster }
+    }
+
+    if (file_mode) {
+      inputstring nonewline sernum in_snfile {
+        setnumber end_of_file 1
+      }
+    }
+    if (file_mode && end_of_file) break
+    if (do_snpull) {
+      call genparent_pull
+      //Give buffer time before searching in tst record
+      sleep 1
+    }
+
+    if (!xml_mode) {
+      call genparent_get_parent_info
+    }
+    if (xml_mode) {
+      call genparent_get_parent_info2
+    }
+
+    calc my_ctra += 1
+
+    if (my_db_status_flag == 49) {
+      kbclose kbtst
+      if (macadd_mode) { kbclose kbmac }
+      DEB("sleep 5 sec")
+      sleep 5	//Sleep 5 sec after closed DB
+    }
+
+    if (file_mode) continue
+  }
+
+  if (file_mode) {
+    type "Result store in file [%s_out].\n" file_name
+  }
+
+genparent_quit:
+  type "End of program.\n"
+end
+
+genparent_pull:
+
+  type "Calling snpull...\n"
+  if (test_area == "") {
+    run "agen.exe snpull MAN~ %s" sernum temp 60 hold
+    ifnotphrase "records pulled" hold {
+      type "snpull failed.\n"
+      run "agen.exe snpull MAN~ %s" sernum temp 60 hold
+    }
+    run "agen.exe snpull MAN~ -%c %s" role_choice[0] sernum temp 60 hold
+    ifnotphrase "records pulled" hold {
+      type "snpull failed.\n"
+      run "agen.exe snpull MAN~ -%c %s" role_choice[0] sernum temp 60 hold
+    }
+  } else {
+    run "agen.exe snpull MAN~ %s area:%s" sernum test_area temp 60 hold
+    ifnotphrase "records pulled" hold {
+      type "snpull failed.\n"
+      run "agen.exe snpull MAN~ %s area:%s" sernum test_area temp 60 hold
+    }
+    run "agen.exe snpull MAN~ -%c %s area:%s" role_choice[0] sernum test_area temp 60 hold
+    ifnotphrase "records pulled" hold {
+      type "snpull failed.\n"
+      run "agen.exe snpull MAN~ -%c %s area:%s" role_choice[0] sernum test_area temp 60 hold
+    }
+  }
+  if (special) {
+    setstring special_str ""
+    seqget asis delim ''' hold 1 special_str
+    type "P/C relationship = %s\n" special_str
+  }
+
+return
+
+//Input : gensnp_sernum
+genparent_pull_lite:
+  if (verbose) { type "Calling snpull...\n" }
+  run "agen.exe snpull MAN~ %s" gensnp_sernum temp 60 hold
+  ifnotphrase "records pulled" hold {
+    type "%s\n" hold
+    type "snpull failed.\n"
+    run "agen.exe snpull MAN~ %s" gensnp_sernum temp 60 hold
+  }
+return
+
+genparent_check_verbose_mode:
+  setnumber verbose 0
+  setnumber vfile_size -1
+  getfilesize "/usr/autoprog/verbose" vfile_size
+  if  (vfile_size != -1) { setnumber verbose 1 }
+return
+
+  
+genparent_get_parent_info2:
+  DEB("--> genparent_get_parent_info2")
+
+  setstring uuttype "" sernum_passfail "" sernum_area ""
+            test_area_found ""
+
+  //initialize the vargroup variables
+  setnumber ctr 0
+  {
+    setnumber passfail_record ctr
+    setstring par_record "" child_record ""
+    calc ctr += 1
+    if (ctr<20) continue
+  }
+
+  if (sernum == "") return
+
+  setstring parent_sernum sernum
+
+  if (role_choice == "P") {
+    call genparent_snpull_parent
+    setstring xml_var "parentsernum="
+    call genparent_extract_xml_record
+    seqget asis delim ';' xml_out_str_list 0 sernum
+    setstring parent_sernum sernum
+  }
+
+  //seqget asis delim ';' xml_out_str_list 0 sernum uuttype sernum_area
+  //setstring role_tree xml_out_str_list
+  //if (rohs_mode) {
+  //  setstring pclist xml_out_str_list
+  //}
+
+  call genparent_snpull_child
+
+  setstring xml_var "sernum=;uuttype=;area="
+  if (rohs_mode) {
+    setstring xml_var "uuttype=;sernum=;partnum=;partnum2="
+  }
+
+  call genparent_extract_xml_record
+
+  setstring reorder_list xml_out_str_list
+  call genparent_reorder_list
+
+  setstring role_tree reorder_list
+  call genparent_type_role_tree
+
+  if (rohs_mode) {
+    setstring pclist reorder_list
+    call genparent_write_to_pclist_file
+  }
+  
+  /*
+  setstring genparent_1st_list role_tree genparent_2nd_list xml_out_str_list
+  setnumber seqdelim ';'
+  call genparent_list_merge
+  setstring role_tree merge_list
+  call genparent_type_role_tree
+
+  if (rohs_mode) {
+    setstring genparent_1st_list pclist genparent_2nd_list xml_out_str_list
+    setnumber seqdelim ';'
+    call genparent_list_merge
+    setstring pclist merge_list
+    call genparent_write_to_pclist_file
+  }
+  */
+
+  DEB("<-- genparent_get_parent_info2")
+return
+
+//Input : reorder_list, parent_sernum
+//Output : reorder_list
+//Search for the parent SN from reorder_list (xml_list). Move it to the 1st element
+//1st element of each item should be the sernum field
+genparent_reorder_list:
+  DEB("--> genparent_reorder_list")
+  DBG "Before [%s]\n" reorder_list
+  seqget numentries delim ';' reorder_list reorder_elem_qty
+  setnumber reorder_elem_ctr 0 reorder_parent_sernum_flag 0
+  {
+    setstring reorder_elem_str ""
+    seqget asis delim ';' reorder_list reorder_elem_ctr reorder_elem_str
+    setstring ro_sernum ""
+    seqget asis delim ',' reorder_elem_str 0 ro_sernum
+    if (ro_sernum == parent_sernum) {
+      setnumber reorder_parent_sernum_flag 1
+    } also break
+    calc reorder_elem_ctr += 1
+    if (reorder_elem_ctr < reorder_elem_qty) continue
+  } 
+  if (reorder_parent_sernum_flag) {
+    seqset delete delim ';' reorder_list reorder_elem_ctr
+    seqset insert delim ';' reorder_list 0 reorder_elem_str
+  }
+  DBG "After [%s]\n" reorder_list
+  DEB("<-- genparent_reorder_list")
+return
+
+genparent_type_role_tree:
+  DEB("--> genparent_type_role_tree")
+  setnumber role_tree_elem_qty 0
+  seqget numentries delim ';' role_tree role_tree_elem_qty
+  setnumber role_tree_elem_ctr 0
+  {
+    setstring role_tree_elem ""
+    seqget asis delim ';' role_tree role_tree_elem_ctr role_tree_elem
+    seqget asis delim ',' role_tree_elem 0 sernum uuttype sernum_area
+    if (role_tree_elem_ctr == 0) { type "%s, %s (%s)\n" sernum uuttype sernum_area }
+    if (role_tree_elem_ctr > 0) {
+      type "-> %s, %s (%s)\n" sernum uuttype sernum_area
+    }
+    calc role_tree_elem_ctr += 1
+    if (role_tree_elem_ctr < role_tree_elem_qty) continue
+  }
+  DEB("<-- genparent_type_role_tree")
+return
+
+/*
+//Input :genparent_1st_list, genparent_2nd_list, delim
+//Output : merge_list
+genparent_list_merge:
+  DEB("--> genparent_list_merge")
+
+  setstring merge_list genparent_1st_list
+  setnumber merge_list_ctr 0
+  {
+    setstring merge_elem_str ""
+    seqget pull genparent_2nd_list merge_list_ctr merge_elem_str break
+    seqset insert merge_list -1 merge_elem_str
+    continue
+  }
+  DBG "merge_list [%s]\n" merge_list
+
+  DEB("<-- genparent_list_merge")
+return
+*/
+
+//Input : sernum, xml_var
+//Output : xml_out_str_list
+genparent_extract_xml_record:
+  DEB("--> genparent_extract_xml_record")
+  setstring xml_file "/tmp/snpull.%s.xml" sernum
+  getfilesize xml_file filesize
+  if (filesize > 0) {
+    setstring xml_out_str_list ""
+    inputfile xml_file in_xmlfile
+    {
+      setstring xml_str ""
+      inputstring nonewline xml_str in_xmlfile break
+      if ("*<tst *" == xml_str) {
+        setnumber xml_str_loc -1
+        stringfind xml_str 0 "<tst" xml_str_loc
+        if (xml_str_loc > -1) {
+          calc xml_str_loc = -1 * xml_str_loc
+          stringcut xml_str_loc front xml_str xml_str
+          DBG "xml_str [%s]\n" xml_str
+        }
+        call genparent_extract_xml_var
+        if (xml_extract_flag) {
+          call genparent_compare_record_time
+          if (xml_record_update_flag) {
+            call genparent_update_xml_strlist
+          }
+        }
+        if (!xml_extract_flag) { DBG "Failed to extract sernum from [%s]\n" xml_str }
+      }
+      continue
+    }
+  }
+  DEB("<-- genparent_extract_xml_record")
+return
+
+//Input : xml_sernum, xml_rectime, xml_sernum_list, xml_rectime_list
+//Output : xml_record_update_flag
+genparent_compare_record_time:
+  DEB("--> genparent_compare_record_time")
+
+  setnumber xml_record_update_flag 0
+  setnumber genparent_elem_idx -1
+  seqcompare exact delim ';' xml_sernum_list 0 xml_sernum genparent_elem_idx
+  if (genparent_elem_idx == -1) {
+    setnumber genparent_elem_idx2 -1
+    seqset mayinsert delim ';' xml_sernum_list -1 xml_sernum
+    seqcompare exact delim ';' xml_sernum_list 0 xml_sernum genparent_elem_idx2
+    seqset set delim ';' xml_rectime_list genparent_elem_idx2 "%d" xml_rectime
+    setnumber xml_record_update_flag 1
+  }
+  if (genparent_elem_idx > -1) {
+    setnumber xml_current_rectime 0
+    seqget long delim ';' xml_rectime_list genparent_elem_idx xml_current_rectime
+    if (xml_rectime > xml_current_rectime) {
+      seqset set delim ';' xml_rectime_list genparent_elem_idx xml_rectime
+      setnumber xml_record_update_flag 1
+    }
+  }
+
+  DEB("<-- genparent_compare_record_time")
+return
+
+//Input : xml_out_str, xml_out_str_list
+//Output : xml_out_str_list
+genparent_update_xml_strlist:
+  DEB("--> genparent_update_xml_strlist\n")
+  seqset insert delim ';' xml_out_str_list -1 xml_out_str
+  DBG "xml_out_str_list [%s]\n" xml_out_str_list
+  DEB("<-- genparent_update_xml_strlist\n")
+return
+
+//Input : xml_var, xml_str
+//Output : xml_out_str, xml_sernum, xml_rectime, xml_extract_flag
+genparent_extract_xml_var:
+  DEB("--> genparent_extract_xml_var")
+  setnumber xml_var_qty 0
+  seqget numentries delim ';' xml_var xml_var_qty
+  setstring xml_out_str ""
+
+  setnumber xml_var_ctr 0
+  {
+    setstring xml_var_elem ""
+    seqget asis delim ';' xml_var xml_var_ctr xml_var_elem
+    
+    setstring xml_var_elem " %s*" xml_var_elem
+    setnumber xml_var_loc -1
+    seqcompare stringwild delim '"' xml_str 0 xml_var_elem xml_var_loc
+    if (xml_var_loc > -1) {
+      calc xml_var_loc += 1
+      setstring xml_substr ""
+      seqget strip delim '"' xml_str xml_var_loc xml_substr
+      seqset insert delim ',' xml_out_str -1 xml_substr
+    }
+    calc xml_var_ctr += 1
+    if (xml_var_ctr < xml_var_qty) continue
+  }
+  
+  setnumber xml_extract_flag 0
+
+  //extract xml_sernum
+  setstring xml_var_elem " sernum=*"
+  setnumber xml_var_loc -1
+  seqcompare stringwild delim '"' xml_str 0 xml_var_elem xml_var_loc
+  if (xml_var_loc > -1) {
+    calc xml_var_loc += 1
+    setstring xml_sernum ""
+    seqget strip delim '"' xml_str xml_var_loc xml_sernum
+    setnumber xml_extract_flag 1
+  }
+
+  //extract xml_rectime
+  setstring xml_var_elem " rectime=*"
+  setnumber xml_var_loc -1
+  seqcompare stringwild delim '"' xml_str 0 xml_var_elem xml_var_loc
+  if (xml_var_loc > -1) {
+    calc xml_var_loc += 1
+    setstring xml_rectime_str ""
+    seqget strip delim '"' xml_str xml_var_loc xml_rectime_str
+    setstring xml_apm ""
+    seqget asis delim ' ' xml_rectime_str 2 xml_apm
+    setnumber xml_time_shift 0
+    if (xml_apm == "AM") { setnumber xml_time_shift 0 }
+    if (xml_apm == "PM") { setnumber xml_time_shift 43200 }
+    seqset delete delim ' ' xml_rectime_str 2
+    setnumber xml_rectime 0
+    timedisect xml_rectime_str "MDYhms" xml_rectime
+    calc xml_rectime += xml_time_shift
+  }
+  DBG "xml_sernum [%s] xml_rectime [%t]\n" xml_sernum xml_rectime
+  
+  DEB("<-- genparent_extract_xml_var")
+return
+
+
+//Input : sernum
+genparent_snpull_parent:
+  DEB("--> genparent_snpull_parent")
+  DBG "agen.exe snpull MAN~ -P %s\n" sernum
+  run "agen.exe snpull MAN~ -P %s" sernum exit_status 200 result_str
+  DBG "%s\n" result_str
+  DEB("<-- genparent_snpull_parent")
+return
+
+//Input : sernum
+genparent_snpull_child:
+  DEB("--> genparent_snpull_child")
+  DBG "agen.exe snpull MAN~ -C %s\n" sernum
+  run "agen.exe snpull MAN~ -C %s" sernum exit_status 200 result_str
+  DBG "%s\n" result_str
+  DEB("<-- genparent_snpull_child")
+return
+
+genparent_get_parent_info:
+  setstring uuttype "" sernum_passfail "" sernum_area ""
+	    test_area_found ""
+
+  //initialize the vargroup variables
+  setnumber ctr 0
+  {
+    setnumber passfail_record ctr
+    setstring par_record "" child_record ""
+    calc ctr += 1
+    if (ctr<20) continue
+  }
+
+  if (sernum == "") return
+
+  setstring parent_sernum sernum
+
+  if (role_choice == "P") {
+    if (exact_mode) { call genparent_snpull_parent }
+    setstring child_sernum ""
+    //Search the latest parent associated with
+    kbsetkey kbtst "tstsernumidx" sernum 0x7fffffff sernum 0x20000000 {
+      kbread kbtst break
+
+      call genparent_filter_tstarea
+      if (ir_flag) continue
+
+      if ((tstparentsernum != "") && (tstparentsernum != "\200") && (tstparentsernum != "S05") && ("S0*" != tstparentsernum)) {
+        //swap the child sernum and sernum
+        setstring child_sernum sernum
+		  child_uuttype tstuuttype
+                  sernum tstparentsernum
+      } also break
+      continue
+    }
+    setstring parent_sernum sernum				//121112
+  }
+
+  if (exact_mode) { call genparent_snpull_child }
+  if (file_mode) {
+    setstring ref_list ""
+    seqset insert delim ' ' ref_list -1 sernum
+    if (child_sernum != "") {
+      seqset insert delim ' ' ref_list -1 "%s,%s" child_uuttype child_sernum
+    }
+  }
+
+  kbsetkey kbtst "tstsernumidx" sernum 0x20000000 sernum 0x7fffffff {
+    kbread kbtst break
+
+    call genparent_filter_tstarea
+    if (ir_flag) continue
+
+    seqset mayinsert delim ',' test_area_found -1 tstarea
+
+    seqcompare exact delim ',' test_area_found 0 tstarea temp
+    //tstarea should be found in test_area_found
+    setnumber passfail_record temp
+    seqset insert delim ',' par_record -1 tstpassfail
+
+    //Record the first station (test area)
+    if ((tstpassfail == "P") && (tstuuttype != "") && (uuttype == "")) {
+      setstring uuttype tstuuttype
+  		sernum_passfail tstpassfail
+  		sernum_area tstarea
+    } 
+    continue
+  }
+
+  if (sernum_passfail != "P") {
+    setstring uuttype tstuuttype
+	      sernum_passfail tstpassfail
+	      sernum_area tstarea
+    if (!file_mode) {	//Jul03 2010
+      type "Top Level S/N : %s, %s (%s %s)\n" sernum uuttype sernum_area sernum_passfail
+    }
+  } else {
+    if (!file_mode) {	//Jul03 2010
+      type "Top Level S/N : %s, %s (%s)\n" sernum uuttype sernum_area
+    }
+  }
+  if (!file_mode) {	//Jul03 2010
+    type "\n"
+  }
+
+  if (!file_mode) {	//Jul03 2010
+    if (test_area == "") {
+      type "Area found (%s)\n" test_area_found
+    } else {
+      type "Area specified (%s)\n" test_area
+    }
+    type "\n"
+  }
+  if (file_mode) {
+    type "."
+  }
+  
+  if(sernum == "NONE") 	//20180305
+  {
+    type "Parent sernum is NONE; goto genend\n"
+    end
+  }
+
+  setstring role_tree "%s,%s,%s" sernum uuttype sernum_area
+  if (macadd_mode) {		//012214
+    setstring macsernum sernum
+    call genparent_get_macadd
+    setstring role_tree "SN:%s,MAC:%s,%s,%s" sernum macadd_str uuttype sernum_area
+  }
+  kbsetkey kbtst "tstparentidx" sernum 0x20000000 sernum 0x7fffffff {
+    kbread kbtst break
+
+    call genparent_filter_tstarea
+    if (ir_flag) continue
+
+    if (macadd_mode) {
+      setstring macsernum tstsernum
+      call genparent_get_macadd		//output : macadd_str
+    }
+
+    /* role_tree
+    * e.g. "FOC12345678,ASSY,SYSFT;FOC00000000,ASSY,SYSFA"
+    */
+    setstring hold "%s*" tstsernum
+    if (macadd_mode) { setstring hold "SN:%s*" tstsernum }
+    setnumber temp 0
+    seqcompare stringwild delim ';' role_tree 0 hold temp
+    if (temp == -1) {
+      if (!macadd_mode) {
+        setstring hold "%s,%s,%s" tstsernum tstuuttype tstarea
+      }
+      if (macadd_mode) {
+        setstring hold "SN:%s,MAC:%s,%s,%s" tstsernum macadd_str tstuuttype tstarea
+      }
+      seqset insert delim ';' role_tree -1 hold
+      if (rohs_mode) { call genparent_write_to_pclist }				//121412
+    }
+    if (temp != -1) {
+      setstring child_sernum_area ""
+      seqget asis delim ';' role_tree temp child_sernum_area
+      seqset mayinsert delim ',' child_sernum_area -1 tstarea
+      seqset set delim ';' role_tree temp child_sernum_area
+    }
+
+    continue
+  }
+
+  //Case for invalid PC relationship
+  //1) child S/N are binded with new parent S/N
+  //2) child S/N are recorded in the same test area but the lastest record does not contain parent S/N
+  if (exact_mode) || (filter_mode) {		//120712
+    //Input : role_tree, pclist
+    //Rewrite pclist
+    zero pclist
+    setstring pclist ""
+    call genparent_verify_parent_sernum
+  }
+  if (rohs_mode) {
+    call genparent_write_to_pclist_file
+  }
+
+  if (!file_mode) {	//Jul03 2010
+    type "P/C relationship\n"
+  }
+
+  setstring child_sernum_area ""
+  seqget asis delim ';' role_tree 0 child_sernum_area
+  seqget asis delim ',' child_sernum_area 0 holda
+  seqget asis delim ',' child_sernum_area 1 holdb
+  seqget asis delim ',' child_sernum_area 2 holdc
+  seqget asis delim ',' child_sernum_area 3 holdd
+  if (!file_mode) {	//Jul03 2010
+    //type "%s, %s (%s)\n" holda holdb holdc
+    if (!macadd_mode) { type "%s, %s (%s)\n" holda holdb holdc }
+    if (macadd_mode) { type "%s, %s, %s (%s)\n" holda holdb holdc holdd }
+  }
+
+  seqget numentries delim ' ' ref_list ref_list_len
+
+  setnumber ctra 1
+  {
+    seqget asis delim ';' role_tree ctra child_sernum_area
+    if (child_sernum_area == "\200") break
+    seqget asis delim ',' child_sernum_area 0 holda
+    seqget asis delim ',' child_sernum_area 1 holdb
+    seqget asis delim ',' child_sernum_area 2 holdc
+    seqget asis delim ',' child_sernum_area 2 holdd
+    if (!file_mode) {	//Jul03 2010 -- do not show in screen for faster running
+      if (!macadd_mode) { type "-> %s, %s (%s)\n" holda holdb holdc }
+      if (macadd_mode) { type "-> %s, %s, %s (%s)\n" holda holdb holdc holdd }
+    }
+    if (file_mode) {
+     if (reference_list) {
+       seqcompare seqwild delim ';' reference_list_str 0 holdb tempa
+      if (tempa != -1) {
+        //Append ref_list according to refernece_list_str order
+        calc tempb = tempa + ref_list_len
+        if (!macadd_mode) {
+          seqset mayinsert delim ' ' ref_list tempb "%s,%s" holdb holda
+        }
+        if (macadd_mode) {
+          seqset mayinsert delim ' ' ref_list -1 "%s,%s,%s" holdc holda holdb
+        }
+      }
+     }
+     if (!reference_list) {
+       if (!macadd_mode) {
+         seqset mayinsert delim ' ' ref_list -1 "%s,%s" holdb holda
+       }
+       if (macadd_mode) {
+         seqset mayinsert delim ' ' ref_list -1 "%s,%s,%s" holdc holda holdb
+       }
+     }
+    }
+    calc ctra += 1
+    continue
+  }
+  if (file_mode) {
+    seqget asis delim ' ' ref_list 0 ref_list_1st_elem
+    seqset delete delim ' ' ref_list 0
+    if (!reference_list) {
+      seqsyncsort up delim ' ' ref_list
+    }
+    if (reference_list) {
+      seqcompare compress delim ' ' ref_list	//remove any blank items - Aug20 2010
+    }
+    if (!special) output "%s %s\n" ref_list_1st_elem ref_list out_snfile
+    if (special) output "%s\n" special_str out_snfile
+  }
+  if (!file_mode) {	//Jul03 2010
+    type "\n"
+  }
+
+  //print detail if verbose is set
+  setstring holda "" holdb "" holdc ""
+	    child_sernum_area ""
+  //child sernum record starting from 2nd item in list role_tree (ctra = 1)
+  setnumber ctra 1 temp 0 tempa 0
+  if (verbose) {
+    {
+      seqget asis delim ';' role_tree ctra child_sernum_area
+      if (child_sernum_area == "\200") break
+      seqget asis delim ',' child_sernum_area 0 holda
+      kbsetkey kbtst "tstsernumidx" holda 0x7fffffff holda 0x20000000 {
+        kbread kbtst break
+
+        call genparent_filter_tstarea
+        if (ir_flag) continue
+
+        seqcompare exact delim ',' test_area_found 0 tstarea temp
+	if (temp != -1) {
+          setnumber passfail_record temp
+          setstring holdb "%s*" tstsernum
+          seqcompare stringwild delim ';' child_record 0 holdb tempa
+
+	  //Only record the "last" test record for each area
+          if (tempa == -1) {
+            if (tstparentsernum == "") {
+              setstring hold "%s (No Parent S/N), %s, %s, record time : %t\n" holda tstuuttype tstpassfail tstrectime
+            }
+            //When the tstparentsernum does not match the Parent S/N, show the Parent S/N
+            if ((tstparentsernum != "") && (tstparentsernum != sernum)) {
+              setstring hold "%s (%s), %s, %s, record time : %t\n" holda tstparentsernum tstuuttype tstpassfail tstrectime
+            }
+            //When the tstparentsernum matches the Parent S/N, not show the Parent S/N
+            if ((tstparentsernum != "") && (tstparentsernum == sernum)) {
+              setstring hold "%s, %s, %s, record time : %t" holda tstuuttype tstpassfail tstrectime
+            }
+            seqset insert delim ';' child_record -1 hold
+          }
+        }
+        continue
+      }
+      calc ctra += 1
+      continue
+    }
+
+    setstring hold "" holda "" holdb "" holdc ""
+    setnumber ctra 0
+    {
+      seqget asis delim ',' test_area_found ctra holda
+      if (holda == "\200") break
+      type "%s : " holda
+
+      setnumber passfail_record ctra
+      seqget asis delim ',' par_record -1 last_record
+      seqcompare dnsort par_record
+
+      setnumber ctrb 0 ctrc 0
+      setstring hold ""
+      {
+        seqget pull delim ',' par_record ctrb holdb {
+          type " %d '%s'" ctrc hold
+        } also break
+        if (hold != holdb)  {
+          if (hold != "") {
+            type " %d '%s'" ctrc hold
+          }
+          setstring hold holdb
+          setnumber ctrc 0
+        }
+        calc ctrc += 1
+        continue
+      }
+      
+      type " record found\n"
+      type "Last record : '%s' (%s)\n"  last_record sernum
+
+      //type the last child test record
+      setnumber ctrb 0
+      setstring hold ""
+      {
+        seqget pull delim ';' child_record ctrb hold break
+        if (hold != "") type "child %d = %s\n" ctrb hold
+        continue
+      }
+
+      if (!file_mode) {	//Jul03 2010
+        type "\n"
+      }
+      calc ctra += 1
+      continue
+    }
+  }
+
+return
+
+genparent_get_macadd:
+  DEB("--> genparent_get_macadd")
+
+  call genparent_get_macadd2
+  if (macadd_str == "") {
+    setstring gensnp_sernum macsernum
+    if (macadd_skipstr == "") call genparent_pull_lite
+    if (macadd_skipstr != "") { 
+      call genparent_process_msc 
+      if (!macadd_skip_flag) {
+        call genparent_pull_lite
+      }
+    }
+    call genparent_get_macadd2
+  }
+  if (verbose) { type "macsernum [%s] macadd_str [%s]\n" macsernum macadd_str }
+  DEB("<-- genparent_get_macadd")
+return
+
+genparent_get_macadd2:
+  setstring macadd_str ""
+  kbsetkey kbmac "macsernumidx" macsernum 0x20000000 macsernum 0x7fffffff
+  {
+    kbread kbmac break
+    setstring macadd_str "%04X%08X" macadr1 macadr2
+    continue
+  }
+return
+
+help:
+type "\nSyntax:\n"
+type "\t agen.exe genparent [-cvpfr] par/child sernum [test area]\n"
+type "\n"
+type "OPTIONS:\n"
+type "v \t= verbose mode\n"
+type "p \t= do snpull\n"
+type "e \t= output the exact parent child relationship i.e. if donot display child/parent S/N if the PC relationship no longer valid\n"
+type "f \t= input sernum from a text file and output file end with phrase \042_out\042\n"
+type "l \t= Input reference uutype to control which child uuttype to show (only available in file mdoe)\n"
+type "r \t= output test record variable which is the input of rohs check (i.e. uuttype,sernum,board partnum, TAN)"
+type "u \t= use cluster server to fetch data\n"
+type "x \t= extract parent-child record from xml file. xml file is got from snpull\n"
+type "par/child \t= input 'P' or 'C' for parent / child mode\n"
+type "test area \t= specified test area\n"
+ 
+type "\n"
+type "example :\n"
+type "Top Level S/N : FHK12345678, CISCO2801 (ASSY)\n"
+type "Area found (ASSY, SYSINT, SYSPM)\n"
+type "P/C relationship\n"
+type "FHK12345678, CISCO2801 (ASSY)\n"
+type "-> FOC12345678, 73-1001-01 (ASSY)\n"
+type "-> FOC00000000, 341-0182-01 (ASSY)\n"
+ 
+type "Detail\n"
+ 
+ 
+type "ASSY : 10 'S', 2 'F', 2 'P' record found\n"
+type "Last record : P (FHK12345678)\n"
+type "child 1 = FOC12345678 (No Parent S/N), 73-1001-01, P, record time : Tue 13:00:00 Jun 2008\n"
+type "child 2 = FOC00000000, 341-0182-01, P, record time : Tue 13:01:00 Jun 2008\n"
+ 
+type "SYSFT : 1 'S', 1 'F', 1 'P' record found\n"
+type "Last record : P (FHK12345678)\n"
+type "child 1 = FOC12345678, 73-1001-01, P, record time : Tue 13:30:00 Jun 2008\n"
+ 
+type "SYSPM : 2 'S', 1 'P' record found\n"
+type "Last record : P (FHK12345678)\n"
+
+end
+
+my_fetch_cluster_server:
+  DEB("--> my_fetch_cluster_server")
+  kbopen kbrunit rdonly "$(AUTO_BASE)/kbase/runit"
+
+  kbsetkey kbrunit "runitmachidx" machine_name 0x7fffffff machine_name 0x20000000 {
+    kbread kbrunit break
+  }
+  setstring mycluster runitdev1
+
+  type "Cluster server [%s]\n" mycluster
+
+  kbclose kbrunit
+  DEB("<-- my_fetch_cluster_server")
+return
+
+//Input role_tree
+genparent_verify_parent_sernum:
+  DEB("--> genparent_verify_parent_sernum")
+  setnumber role_elem_qty 0
+  seqget numentries delim ';' role_tree role_elem_qty
+
+  setstring role_elem_valid_list ""
+
+  setstring role_elem_str "" role_parent_sernum ""
+  seqget asis delim ';' role_tree 0 role_elem_str
+  seqget asis delim ',' role_elem_str 0 role_parent_sernum
+  seqset set delim ';' role_elem_valid_list 0 "1"
+  if (macadd_mode) { seqset delete delim ':' role_parent_sernum 0 }	//Trim out "SN:" prefix
+
+  //The 1st element is parent S/N
+  setnumber role_elem_ctr 1
+  if (role_elem_qty > 1) {
+    setstring role_elem_str ""
+    seqget asis delim ';' role_tree role_elem_ctr role_elem_str
+
+    setstring role_child_sernum "" role_child_uuttype "" role_child_area ""
+
+    seqget asis delim ',' role_elem_str 0 role_child_sernum role_child_uuttype
+    if (macadd_mode) {
+      seqget asis delim ',' role_elem_str 0 role_child_sernum
+      seqset delete delim ':' role_child_sernum 0 	//Trim out "SN:" prefix
+      seqget asis delim ',' role_elem_str 2 role_child_uuttype
+    }
+    //seqget asis delim ',' role_elem_str 0 role_child_sernum role_child_uuttype role_child_area
+
+    //Extract value for role_child_area
+    setstring role_child_area "" role_child_area2 ""
+    seqget numentries delim ',' role_elem_str role_elem_qty2
+    setnumber role_elem_ctr2 2
+    if (macadd_mode) { setnumber role_elem_ctr2 3 }		//012214
+    {
+      seqget asis delim ',' role_elem_str role_elem_ctr2 role_child_area2
+      seqset insert delim ',' role_child_area -1 role_child_area2
+      calc role_elem_ctr2 += 1
+      if (role_elem_ctr2 < role_elem_qty2) continue
+    }
+
+    if (verbose) {
+      type "role_child_sernum [%s] role_child_uuttype [%s] role_child_area [%s]\n" role_child_sernum role_child_uuttype role_child_area
+    }
+    call genparent_verify_parent_sernum2
+    seqset set delim ';' role_elem_valid_list role_elem_ctr "%d" pc_relation_flag
+    calc role_elem_ctr += 1
+    if (role_elem_ctr < role_elem_qty) continue
+  }
+
+  setstring role_tree2 ""
+  setnumber role_elem_ctr 0
+  {
+    seqget long delim ';' role_elem_valid_list role_elem_ctr role_elem_flag
+    seqget asis delim ';' role_tree role_elem_ctr role_elem_str
+    if (role_elem_flag) {
+      seqset insert delim ';' role_tree2 -1 role_elem_str
+    }
+    calc role_elem_ctr += 1
+    if (role_elem_ctr < role_elem_qty) continue
+  }
+
+  if (verbose) { 
+    type "role_elem_valid_list [%s]\n" role_elem_valid_list
+    type "original role_tree [%s]\n" role_tree 
+    type "new role_tree [%s]\n" role_tree2
+  }
+  setstring role_tree role_tree2
+
+  DEB("<-- genparent_verify_parent_sernum")
+return
+
+//Input : role_child_sernum role_child_uuttype role_child_area
+//	  role_parent_sernum role_parent_uuttype role_parent_area
+//        role_valid_start_time role_valid_end_time
+//Output : pc_relation_flag - 0: invalid , 1 valid
+//
+//Case for invalid PC relationship
+//1) child S/N are binded with new parent S/N
+//2) child S/N are recorded in the same test area but the lastest record does not contain parent S/N
+genparent_verify_parent_sernum2:
+  DEB("--> genparent_verify_parent_sernum2")
+
+  //Find the valid time window for the correct parent-child relationship
+  setnumber pc_verify_ctr 0 role_valid_start_time 0 role_valid_end_time 0
+  kbsetkey kbtst "tstsernumidx" role_parent_sernum 0x7fffffff role_parent_sernum 0x20000000 {
+    kbread kbtst break
+
+    call genparent_filter_tstarea
+    if (ir_flag) continue
+
+    if ("*%s*" tstarea == role_child_area) {
+      if (verbose) { type "tstarea [%s] vs child area [%s]\n" tstarea role_child_area }
+      if (pc_verify_ctr == 0) { setnumber role_valid_end_time tstrectime }
+      if (pc_verify_ctr == 2) { setnumber role_valid_start_time tstrectime }
+      calc pc_verify_ctr += 1
+    }
+    if (pc_verify_ctr > 2) break
+    continue
+  }
+  if (role_valid_start_time == 0) { setnumber role_valid_start_time 0x20000000 }
+  if (role_valid_end_time == 0) { setnumber role_valid_end_time 0x7fffffff }
+
+  if (verbose) {
+    type "Area [%s] Time range [%t, %t]\n" role_child_area role_valid_start_time role_valid_end_time
+  }
+
+  if (verbose) type "role_parent_sernum [%s]\n" role_parent_sernum
+  setnumber pc_relation_flag 0 pc_verify_ctr 0
+  kbsetkey kbtst "tstsernumidx" role_child_sernum 0x7fffffff role_child_sernum 0x20000000 {
+    kbread kbtst break
+
+    call genparent_filter_tstarea
+    if (ir_flag) continue
+
+    if (verbose) type "tstparentsernum [%s]\n" tstparentsernum
+
+    //If exact_mode is not selected, donot perform below checking
+    if (!exact_mode) { goto genparent_verify_parent_sernum2_failcase }
+
+    if ("*%s*" tstarea == role_child_area) {
+      if (tstrectime < role_valid_start_time) || (tstrectime > role_valid_end_time) {
+        if (verbose) { type "[%s] record time [%t] out of range.\n" role_child_sernum tstrectime }
+        goto genparent_verify_parent_sernum2_failcase
+      }
+    }
+
+    if (pc_verify_ctr == 0) && (tstpassfail != "P") { goto genparent_verify_parent_sernum2_failcase } 			//Invalid case
+    if (tstpassfail == "P") {
+      if (role_parent_sernum != tstparentsernum) && ((tstparentsernum != "") && (tstparentsernum != STR_NULL)) {
+	if (verbose) { type "S/N is binded with [%s] instead of [%s]\n" tstparentsernum role_parent_sernum }
+        goto genparent_verify_parent_sernum2_failcase									//Invalid case
+      }
+      if ("*%s*" tstarea != role_child_area) { goto genparent_verify_parent_sernum2_failcase }					//Invalid case
+      if ((tstparentsernum != "") && (tstparentsernum != STR_NULL)) { setnumber pc_relation_flag 1 }
+    }
+    calc pc_verify_ctr += 1
+    if (pc_relation_flag) { goto genparent_verify_parent_sernum2_passcase }
+    continue
+
+    genparent_verify_parent_sernum2_failcase:
+    setnumber pc_relation_flag 0
+    break
+
+    genparent_verify_parent_sernum2_passcase:
+    setnumber pc_relation_flag 1
+    if (rohs_mode) { call genparent_write_to_pclist }
+    break
+  }
+
+  DEB("<-- genparent_verify_parent_sernum2")
+return
+
+//Output to snlist which contain uuttype, sernum, boardpn, tan
+genparent_write_to_pclist:
+  DEB("--> genparent_write_to_pclist")
+  setstring genparent_tstpartnum tstpartnum
+	    genparent_tstpartnum2 tstpartnum2
+
+  seqcompare compress delim ';' genparent_tstpartnum 			//Remove any empty element ';'
+  if (genparent_tstpartnum == STR_NULL) { setstring genparent_tstpartnum "" }
+  if (genparent_tstpartnum2 == STR_NULL) { setstring genparent_tstpartnum2 "" }
+
+  setstring genparent_tstpartnumA ""
+  seqget asis delim ';' genparent_tstpartnum 0 genparent_tstpartnumA
+  
+  setstring genparent_csv_str "%s,%s,%s,%s" tstuuttype tstsernum genparent_tstpartnum2 genparent_tstpartnumA
+  seqset insert delim '\n' pclist -1 genparent_csv_str
+  DEB("<-- genparent_write_to_pclist")
+return
+
+genparent_write_to_pclist_file:
+  DEB("--> genparent_write_to_pclist_file")
+  outputfile "/tmp/%s.pclist" parent_sernum out_pcfile
+  output "%s\n" pclist out_pcfile
+  outputfile "" out_pcfile
+  DEB("<-- genparent_write_to_pclist_file")
+return
+
+//Input : tstarea
+//Output : ir_flag
+genparent_filter_tstarea:
+  //Filter mode - filter out the record with ignored area
+  setnumber ir_flag 0               //ir : ignore_record
+  if (filter_mode) {
+    setnumber ir_idx -1
+    seqcompare exact delim ',' ir_tstarea_list 0 tstarea ir_idx
+    if (ir_idx != -1) { setnumber ir_flag 1 }
+  }
+return
+
+//Input : macadd_skipstr
+//Output : macadd_skip_flag
+genparent_process_msc:
+
+  setnumber macadd_skip_flag 0
+  setstring macadd_skiptype "" macadd_skipval ""
+  seqget asis delim '=' macadd_skipstr 0 macadd_skiptype macadd_skipval
+  if (verbose) { type "macadd_skipval [%s]\n" macadd_skipval }
+  switch start macadd_skiptype {
+    case "PARTNUMBER"  case "PARTNUM"
+    case "PN" case "P/N"
+    setnumber genpar_msc_idx -1
+    seqcompare stringwild delim ';' tstpartnum 0 macadd_skipval genpar_msc_idx
+    if (genpar_msc_idx > -1) { setnumber macadd_skip_flag 1 }
+    break
+    case "SERIAL NUMBER" case "SERIAL NO"
+    case "SERNUM" case "SN" case "S/N"
+    if (macadd_skipval == tstsernum) { 
+      setnumber macadd_skip_flag 1
+    }
+    break
+  } switch finish
+
+return
